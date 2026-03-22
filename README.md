@@ -12,7 +12,12 @@ A simple Streamlit app template for you to modify!
    $ pip install -r requirements.txt
    ```
 
-2. Run the app
+2. **API key (Anthropic)**  
+   Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` to your key.  
+   **Never commit `.env`** — it is listed in `.gitignore`.  
+   If a key was ever exposed (chat, screenshot, or accidental commit), **revoke it immediately** in the [Anthropic Console](https://console.anthropic.com/) and create a new key.
+
+3. Run the app
 
    ```
    $ streamlit run streamlit_app.py

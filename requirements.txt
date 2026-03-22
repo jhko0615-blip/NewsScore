@@ -3,3 +3,5 @@ langgraph
 langchain
 pandas
 feedparser
+anthropic
+python-dotenv
