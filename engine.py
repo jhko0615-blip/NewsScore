@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.parse
 import operator
-from typing import Annotated, Any, Dict, List, TypedDict
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 import feedparser
 from anthropic import Anthropic
@@ -15,6 +17,16 @@ from langgraph.graph import END, StateGraph
 load_dotenv()
 
 CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+
+DEFAULT_KEYWORDS = ["iran", "DXY", "gold", "silver", "WTI", "oil", "bitcoin", "macro"]
+
+# 우선 출처 — combined OR 쿼리로 Google News RSS에 전달
+NEWS_SITE_FILTER = (
+    "(site:bloomberg.com OR site:finance.yahoo.com"
+    " OR site:investing.com OR site:cnbc.com)"
+)
+
+MAX_AGE_HOURS = 24
 
 
 class CollectorState(TypedDict):
@@ -31,6 +43,7 @@ def collect_data(state: CollectorState) -> Dict[str, Any]:
         "messages": [
             {
                 "id": next_count,
+                "keyword": article.get("keyword", ""),
                 "title": article["title"],
                 "link": article["link"],
                 "published": article["published"],
@@ -42,7 +55,7 @@ def collect_data(state: CollectorState) -> Dict[str, Any]:
 
 
 def should_continue(state: CollectorState) -> str:
-    if state["count"] < 5 and state["current_index"] < len(state["articles"]):
+    if state["current_index"] < len(state["articles"]):
         return "collect"
     return "end"
 
@@ -65,20 +78,81 @@ def build_graph():
 app = build_graph()
 
 
-def fetch_google_news(max_items: int = 5) -> List[Dict[str, Any]]:
-    query = urllib.parse.quote("비트코인 OR 거시경제")
-    url = f"https://news.google.com/rss/search?q={query}&hl=ko&gl=KR&ceid=KR:ko"
-    feed = feedparser.parse(url)
+def _entry_datetime(entry: Any) -> Optional[datetime]:
+    """feedparser 엔트리에서 UTC datetime을 추출. 파싱 불가 시 None."""
+    pp = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not pp:
+        return None
+    try:
+        return datetime(*pp[:6], tzinfo=timezone.utc)
+    except Exception:
+        return None
 
+
+def fetch_google_news(
+    keywords: List[str],
+    per_keyword: int = 3,
+    max_total: int = 30,
+) -> List[Dict[str, Any]]:
+    """
+    키워드별로 Google News RSS를 조회한다.
+    - 우선 출처(Bloomberg, Yahoo Finance, Investing.com, CNBC) combined OR 쿼리로 단일 요청.
+    - 발행일 파싱 불가 기사는 스킵.
+    - 최신순 가정: 24시간 초과 기사 등장 시 해당 키워드 스트림 종료.
+    - 부족하면 일반 검색(우선 출처 없이)으로 보충 — 동일한 24시간 규칙 적용.
+    - 전체 수집 후 최신순 정렬 → max_total 개 반환.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
     articles: List[Dict[str, Any]] = []
-    for entry in feed.entries[:max_items]:
-        articles.append(
-            {
-                "title": entry.get("title", "제목 없음"),
-                "link": entry.get("link", ""),
-                "published": entry.get("published", "발행일 정보 없음"),
-            }
+    seen_links: set = set()
+    keyword_counts: Dict[str, int] = {kw: 0 for kw in keywords}
+
+    def _scrape(query: str, kw: str) -> None:
+        """RSS 한 피드를 순서대로 읽어 keyword_counts[kw] < per_keyword 까지 수집."""
+        url = (
+            "https://news.google.com/rss/search?"
+            f"q={urllib.parse.quote(query)}&hl=en&gl=US&ceid=US:en"
         )
+        feed = feedparser.parse(url)
+        for entry in feed.entries:
+            if keyword_counts[kw] >= per_keyword:
+                break
+            link = (entry.get("link") or "").strip()
+            if not link or link in seen_links:
+                continue
+            dt = _entry_datetime(entry)
+            if dt is None:
+                continue                     # 날짜 파싱 불가 → 스킵
+            if dt < cutoff:
+                break                        # 최신순 가정: 이후 기사도 오래됨 → 종료
+            seen_links.add(link)
+            keyword_counts[kw] += 1
+            articles.append(
+                {
+                    "keyword": kw,
+                    "title": entry.get("title", "제목 없음"),
+                    "link": link,
+                    "published": entry.get("published", ""),
+                    "published_dt": dt,
+                }
+            )
+
+    for kw in keywords:
+        # 1단계: 우선 출처 combined 쿼리
+        _scrape(f"{kw} {NEWS_SITE_FILTER}", kw)
+
+        # 2단계: 부족하면 일반 검색으로 보충
+        if keyword_counts[kw] < per_keyword:
+            _scrape(kw, kw)
+
+        time.sleep(0.25)
+
+    # 최신순 정렬 → max_total 개 슬라이스 → published_dt 제거
+    articles.sort(key=lambda x: x["published_dt"], reverse=True)
+    articles = articles[:max_total]
+    for a in articles:
+        a.pop("published_dt", None)
+
     return articles
 
 
@@ -138,7 +212,6 @@ def analyze_news(news_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     raw = message.content[0].text
     parsed = _parse_json_array_from_llm(raw)
 
-    # index -> {score, summary}
     by_index: Dict[int, Dict[str, Any]] = {}
     for row in parsed:
         idx = int(row.get("index", 0))
@@ -161,8 +234,15 @@ def analyze_news(news_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result
 
 
-def stream_collection():
-    articles = fetch_google_news(max_items=5)
+def stream_collection(keywords: List[str], per_keyword_count: int = 3, max_total: int = 30):
+    articles = fetch_google_news(keywords, per_keyword_count, max_total)
+    total = len(articles)
+    yield {"meta": {"total": total}}
+
+    if total == 0:
+        yield {"node": "empty", "messages": [], "collected_empty": True}
+        return
+
     initial_state: CollectorState = {
         "messages": [],
         "count": 0,
