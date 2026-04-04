@@ -1,0 +1,5 @@
+﻿# Local secrets — keep out of Cursor index (.env.example is not listed)
+.env
+.env.local
+.env.*.local
+.envrc
