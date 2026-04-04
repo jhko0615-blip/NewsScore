@@ -1,3 +1,4 @@
+import subprocess
 import time
 
 import pandas as pd
@@ -6,14 +7,27 @@ from dotenv import load_dotenv
 
 from engine import DEFAULT_KEYWORDS, analyze_news, stream_collection
 
-load_dotenv()
+load_dotenv(override=True)
+
+# ── 버전 태그 ─────────────────────────────────────────────────────────────────
+try:
+    _version = subprocess.check_output(
+        ["git", "describe", "--tags", "--abbrev=0"],
+        stderr=subprocess.DEVNULL,
+    ).decode().strip()
+except Exception:
+    _version = ""
 
 st.set_page_config(page_title="실시간 투자 리서치 생성기", page_icon="📡", layout="centered")
 
 st.markdown(
-    """
-    <h1 style='margin-bottom: 0;'>📡 실시간 투자 리서치 생성기</h1>
-    <p style='font-size: 0.95rem; color: #888; margin-top: 4px;'>
+    f"""
+    <h1 style='margin-bottom: 0;'>
+        📡 실시간 투자 리서치 생성기
+        <span style='font-size:0.75rem; color:#bbb; font-weight:400;
+                     vertical-align:middle; margin-left:8px;'>{_version}</span>
+    </h1>
+    <p style='font-size: 0.95rem; color: #888; margin-top: 4px; margin-bottom: 24px;'>
         Analysis by <strong>Jihun</strong>
         &nbsp;·&nbsp;
         <span style='font-size: 0.85rem;'>engineered with <strong>Claude</strong></span>
@@ -34,63 +48,58 @@ if "keywords" not in st.session_state:
     st.session_state.keywords = list(DEFAULT_KEYWORDS)
 if "collected_data" not in st.session_state:
     st.session_state.collected_data = []
-if "analyzed_data" not in st.session_state:   # ← 결과 영구 보존
+if "analyzed_data" not in st.session_state:
     st.session_state.analyzed_data = []
 if "kw_selected" not in st.session_state:
     st.session_state.kw_selected = list(DEFAULT_KEYWORDS)
 if "kw_pills_v" not in st.session_state:
     st.session_state.kw_pills_v = 0
+if "kw_input_v" not in st.session_state:
+    st.session_state.kw_input_v = 0
 
 # ── 키워드 배지 ──────────────────────────────────────────────────────────────
-st.write("**키워드**")
-
 all_sel = set(st.session_state.kw_selected) >= set(st.session_state.keywords)
-c_btn, _ = st.columns([1, 5])
-with c_btn:
+
+col_label, col_pills = st.columns([1, 8])
+with col_label:
+    st.markdown("<div style='padding-top:8px; font-weight:bold;'>키워드</div>", unsafe_allow_html=True)
+with col_pills:
+    result = st.pills(
+        "키워드",
+        options=st.session_state.keywords,
+        selection_mode="multi",
+        default=st.session_state.kw_selected,
+        key=f"kw_pills_{st.session_state.kw_pills_v}",
+        label_visibility="collapsed",
+    )
+st.session_state.kw_selected = list(result) if result else []
+
+# 새 키워드 추가 + 전체 선택/해제
+col_input, col_add, col_toggle = st.columns([5, 1, 1])
+with col_input:
+    new_kw = st.text_input(
+        "새 키워드",
+        label_visibility="collapsed",
+        placeholder="새 키워드",
+        key=f"kw_input_{st.session_state.kw_input_v}",
+    )
+with col_add:
+    if st.button("추가", key="btn_add"):
+        if new_kw.strip():
+            kw_stripped = new_kw.strip()
+            if kw_stripped not in st.session_state.keywords:
+                st.session_state.keywords.append(kw_stripped)
+                st.session_state.kw_selected.append(kw_stripped)
+                st.session_state.kw_pills_v += 1
+            st.session_state.kw_input_v += 1
+            st.rerun()
+with col_toggle:
     if st.button("전체 해제" if all_sel else "전체 선택", key="toggle_all"):
         st.session_state.kw_selected = (
             [] if all_sel else list(st.session_state.keywords)
         )
         st.session_state.kw_pills_v += 1
         st.rerun()
-
-result = st.pills(
-    "키워드",
-    options=st.session_state.keywords,
-    selection_mode="multi",
-    default=st.session_state.kw_selected,
-    key=f"kw_pills_{st.session_state.kw_pills_v}",
-    label_visibility="collapsed",
-)
-st.session_state.kw_selected = list(result) if result else []
-
-# 새 키워드 추가
-with st.form("add_keyword_form", clear_on_submit=True):
-    col1, col2 = st.columns([5, 1])
-    with col1:
-        new_kw = st.text_input(
-            "새 키워드",
-            label_visibility="collapsed",
-            placeholder="새 키워드",
-        )
-    with col2:
-        submitted = st.form_submit_button("추가")
-    if submitted and new_kw.strip():
-        kw_stripped = new_kw.strip()
-        if kw_stripped not in st.session_state.keywords:
-            st.session_state.keywords.append(kw_stripped)
-            st.session_state.kw_selected.append(kw_stripped)
-            st.session_state.kw_pills_v += 1
-        st.rerun()
-
-st.divider()
-
-# ── 키워드당 수집 수량 ────────────────────────────────────────────────────────
-per_keyword_count = st.select_slider(
-    "키워드당 수집 기사 수",
-    options=[1, 2, 3, 4, 5],
-    value=3,
-)
 
 st.divider()
 
@@ -137,7 +146,6 @@ def _build_results_html(analyzed: list) -> str:
 
         row_cls = "red" if score >= 9 else ("yellow" if score >= 7 else "")
 
-        # 제목 셀: link 값을 href에 직접 연결
         title_cell = (
             f'<a href="{link}" target="_blank" class="tl">{title}</a>'
             if link else title
@@ -162,19 +170,29 @@ def _build_results_html(analyzed: list) -> str:
     return css + thead + tbody + "</tbody></table>"
 
 
-# ── 상태·스트리밍 표시 영역 (수집 중에만 사용) ──────────────────────────────
-status_box  = st.empty()
+# ── 상태·스트리밍 표시 영역 ───────────────────────────────────────────────────
+status_box   = st.empty()
 stream_table = st.empty()
-count_box   = st.empty()
+count_box    = st.empty()
 
-# ── 기사 수집 버튼 ────────────────────────────────────────────────────────────
-if st.button("기사 수집", type="primary"):
+# ── 기사 수집 (슬라이더 + 버튼 같은 행) ──────────────────────────────────────
+col_slider, col_btn = st.columns([3, 1])
+with col_slider:
+    per_keyword_count = st.select_slider(
+        "키워드당 수집 기사 수",
+        options=[1, 2, 3, 4, 5],
+        value=3,
+    )
+with col_btn:
+    st.markdown("<div style='padding-top:22px;'></div>", unsafe_allow_html=True)
+    collect_clicked = st.button("기사 수집", type="primary")
+
+if collect_clicked:
     active_keywords = st.session_state.kw_selected
 
     if not active_keywords:
         status_box.warning("수집할 키워드를 하나 이상 선택하세요.")
     else:
-        # 새 수집 시작 → 이전 결과 초기화
         st.session_state.analyzed_data = []
         st.session_state.collected_data = []
         max_total = per_keyword_count * len(active_keywords)
@@ -208,9 +226,9 @@ if st.button("기사 수집", type="primary"):
         else:
             status_box.info("뉴스 수집 완료. AI 분석 중...")
             try:
-                with st.spinner("Claude가 뉴스 제목을 분석 중입니다..."):
+                with st.spinner("Claude 분석 중"):
                     analyzed = analyze_news(st.session_state.collected_data)
-                st.session_state.analyzed_data = analyzed   # ← 세션에 보존
+                st.session_state.analyzed_data = analyzed
                 stream_table.empty()
                 count_box.empty()
                 status_box.success("분석 완료")
@@ -219,6 +237,6 @@ if st.button("기사 수집", type="primary"):
             except Exception as e:
                 status_box.error(f"AI 분석 중 오류: {e}")
 
-# ── 결과 테이블: 세션에 데이터가 있으면 항상 표시 (rerun에도 유지) ──────────
+# ── 결과 테이블 ───────────────────────────────────────────────────────────────
 if st.session_state.analyzed_data:
     st.html(_build_results_html(st.session_state.analyzed_data))

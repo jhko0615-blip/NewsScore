@@ -14,9 +14,9 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
 
-load_dotenv()
+load_dotenv(override=True)
 
-CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 
 DEFAULT_KEYWORDS = ["iran", "DXY", "gold", "silver", "WTI", "oil", "bitcoin", "macro"]
 
@@ -174,7 +174,7 @@ def analyze_news(news_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     각 항목에 ``ai_score`` (1-10, 시장 영향력)와 ``insight`` (전략적 요약 한 줄)를 추가해 반환합니다.
     """
-    load_dotenv()
+    load_dotenv(override=True)
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key or api_key == "your_key_here":
         raise ValueError(
